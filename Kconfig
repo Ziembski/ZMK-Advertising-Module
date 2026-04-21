@@ -43,4 +43,22 @@ config BLE_ADVERTISER_INTERVAL_MAX_MS
     help
       Maximum interval between advertisement packets.
 
+config BLE_ADVERTISER_SEPARATE_ADDR
+    bool "Use a separate random-static MAC for the status advertiser"
+    default y
+    help
+      When enabled, the status advertising set uses a deterministic
+      random-static address derived from CONFIG_ZMK_KEYBOARD_NAME,
+      instead of the keyboard's identity address.
+
+      Benefits:
+        - The scanner can lock onto this address exclusively, without
+          being confused by ZMK's own connectable advertising.
+        - The address is stable across reflashes (derived from name).
+        - Use the logged address as CONFIG_BLE_TARGET_ADDR in the
+          BLE Scanner firmware.
+
+      When disabled, BT_LE_ADV_OPT_USE_IDENTITY is used instead
+      (same MAC as ZMK's HID advertising).
+
 endif # BLE_ADVERTISER
