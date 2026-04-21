@@ -148,6 +148,7 @@ ZMK_LISTENER(ble_adv_wpm, on_wpm_changed);
 ZMK_SUBSCRIPTION(ble_adv_wpm, zmk_wpm_state_changed);
 #endif
 
+/*
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 static int on_periph_battery(const zmk_event_t *eh)
 {
@@ -163,6 +164,7 @@ static int on_periph_battery(const zmk_event_t *eh)
 ZMK_LISTENER(ble_adv_periph, on_periph_battery);
 ZMK_SUBSCRIPTION(ble_adv_periph, zmk_split_peripheral_status_changed);
 #endif
+*/
 
 /* ── Module init ─────────────────────────────────────────── */
 
