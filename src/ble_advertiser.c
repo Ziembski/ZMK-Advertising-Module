@@ -73,52 +73,6 @@ static struct bt_data ad[] = {
     BT_DATA(BT_DATA_MANUFACTURER_DATA, mfr_data, MFR_DATA_LEN),
 };
 
-/* ── Deterministic random-static address ─────────────────── */
-
-#if IS_ENABLED(CONFIG_BLE_ADVERTISER_SEPARATE_ADDR)
-
-/**
- * Build a BLE random-static address from the keyboard name.
- *
- * FNV-1a over the name gives 32 bits; a second pass with a different
- * seed gives another 32 bits — together 64 bits, of which we use 46
- * (the address field minus the two mandatory top bits).
- *
- * Random-static address format (Bluetooth Core Spec Vol 6, Part B, §1.3):
- *   bits[47:46] must be 0b11  (set via | 0xC0 on the MSB)
- *   bits[45:0]  random
- */
-static void build_status_addr(bt_addr_t *addr)
-{
-    const char *name = CONFIG_ZMK_KEYBOARD_NAME;
-    uint32_t h1, h2;
-
-    /* FNV-1a, two independent passes */
-    h1 = 2166136261u;
-    for (const char *p = name; *p; p++) {
-        h1 ^= (uint8_t)*p;
-        h1 *= 16777619u;
-    }
-    h2 = h1 ^ 0xDEADBEEFu;
-    for (const char *p = name; *p; p++) {
-        h2 ^= (uint8_t)*p;
-        h2 *= 16777619u;
-    }
-
-    /*
-     * Pack into 6 bytes (little-endian as Zephyr stores BT addresses).
-     * val[5] is the most-significant byte in the BT address on air.
-     */
-    addr->val[0] = (uint8_t)(h1);
-    addr->val[1] = (uint8_t)(h1 >>  8);
-    addr->val[2] = (uint8_t)(h1 >> 16);
-    addr->val[3] = (uint8_t)(h2);
-    addr->val[4] = (uint8_t)(h2 >>  8);
-    addr->val[5] = (uint8_t)(h2 >> 16) | 0xC0u; /* set random-static bits */
-}
-
-#endif /* CONFIG_BLE_ADVERTISER_SEPARATE_ADDR */
-
 /* ── Advertising interval helper ─────────────────────────── */
 
 /* Zephyr advertising interval unit = 0.625 ms */
@@ -160,26 +114,6 @@ static void adv_create_work_fn(struct k_work *work)
         return;
     }
 
-#if IS_ENABLED(CONFIG_BLE_ADVERTISER_SEPARATE_ADDR)
-    /* Assign the deterministic random-static address to this set. */
-    bt_addr_t status_addr;
-    build_status_addr(&status_addr);
-
-    err = bt_le_ext_adv_set_addr(adv_set, &status_addr);
-    if (err) {
-        LOG_WRN("bt_le_ext_adv_set_addr failed (%d) — using identity", err);
-    } else {
-        /*
-         * Log the MAC in big-endian display order (val[5]..val[0])
-         * so the user can paste it directly into CONFIG_BLE_TARGET_ADDR.
-         */
-        LOG_INF("Status advertiser MAC (use as CONFIG_BLE_TARGET_ADDR):");
-        LOG_INF("  %02X:%02X:%02X:%02X:%02X:%02X",
-                status_addr.val[5], status_addr.val[4],
-                status_addr.val[3], status_addr.val[2],
-                status_addr.val[1], status_addr.val[0]);
-    }
-#endif
 
     /* Set initial payload. */
     payload_build(&mfr_data[2]);
