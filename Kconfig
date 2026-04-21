@@ -17,8 +17,9 @@ config BLE_ADVERTISER_INIT_PRIORITY
     default 1
     help
       SYS_INIT priority at APPLICATION level.
-      Must be greater than CONFIG_ZMK_BLE_INIT_PRIORITY (default 0)
-      so that the BT stack is fully ready before this module starts.
+      Must be greater than CONFIG_ZMK_BLE_INIT_PRIORITY (default 0).
+      Note: advertising set creation is deferred until BT is ready,
+      so this only registers event listeners.
 
 config BLE_ADVERTISER_COMPANY_ID
     hex "Manufacturer Specific Data company ID"
@@ -34,8 +35,6 @@ config BLE_ADVERTISER_INTERVAL_MIN_MS
     range 100 10000
     help
       Minimum interval between advertisement packets.
-      200 ms is a good balance between discoverability and power use.
-      The scanner refreshes every 100 ms, so ≤200 ms ensures fresh data.
 
 config BLE_ADVERTISER_INTERVAL_MAX_MS
     int "Maximum advertising interval (ms)"
@@ -43,5 +42,23 @@ config BLE_ADVERTISER_INTERVAL_MAX_MS
     range 100 10000
     help
       Maximum interval between advertisement packets.
+
+config BLE_ADVERTISER_SEPARATE_ADDR
+    bool "Use a separate random-static MAC for the status advertiser"
+    default y
+    help
+      When enabled, the status advertising set uses a deterministic
+      random-static address derived from CONFIG_ZMK_KEYBOARD_NAME,
+      instead of the keyboard's identity address.
+
+      Benefits:
+        - The scanner can lock onto this address exclusively, without
+          being confused by ZMK's own connectable advertising.
+        - The address is stable across reflashes (derived from name).
+        - Use the logged address as CONFIG_BLE_TARGET_ADDR in the
+          BLE Scanner firmware.
+
+      When disabled, BT_LE_ADV_OPT_USE_IDENTITY is used instead
+      (same MAC as ZMK's HID advertising).
 
 endif # BLE_ADVERTISER

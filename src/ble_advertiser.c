@@ -4,15 +4,33 @@
  * Manages a non-connectable BLE advertising set that broadcasts the
  * keyboard status payload built by payload_builder.c.
  *
- * Design:
- *   • Uses bt_le_ext_adv with a LEGACY PDU (no BT_LE_ADV_OPT_EXT_ADV),
- *     so passive scanners (including the companion BLE Scanner firmware)
- *     receive it without needing active scanning.
- *   • BT_LE_ADV_OPT_USE_IDENTITY ensures the same MAC address as ZMK's
- *     own HID advertising — the scanner sees one device, not two.
- *   • Runs alongside ZMK's existing advertising set with no interference.
- *   • ZMK events trigger an immediate rebuild + update.
- *   • A periodic work item refreshes WPM (which changes continuously).
+ * ── Why lazy init? ───────────────────────────────────────────────────
+ * ZMK calls bt_enable(zmk_ble_bt_ready) asynchronously in its own
+ * SYS_INIT handler (APPLICATION, priority 0). By the time our init
+ * fires (priority 1), bt_enable has been called but the controller is
+ * not ready yet — bt_le_ext_adv_create returns -EAGAIN or -EIO and
+ * advertising silently never starts.
+ *
+ * Fix: SYS_INIT only registers event listeners. The first ZMK event
+ * that fires after BT is ready triggers adv_set creation via a work
+ * item. If it still fails (race), the work item reschedules itself
+ * with backoff until it succeeds.
+ *
+ * ── Separate MAC address ─────────────────────────────────────────────
+ * When CONFIG_BLE_ADVERTISER_SEPARATE_ADDR=y (default), the status
+ * advertising set is given a deterministic random-static address
+ * derived from CONFIG_ZMK_KEYBOARD_NAME via FNV-1a hash.
+ *
+ * Benefits:
+ *   - The address is always the same after reflash.
+ *   - It is different from ZMK's HID identity address, so the scanner
+ *     locks onto the status advertiser without seeing HID traffic.
+ *   - Put this address in CONFIG_BLE_TARGET_ADDR on the scanner.
+ *   - The address is logged at boot: look for "Status MAC:" in RTT/USB
+ *     serial output.
+ *
+ * A BLE random-static address has bits[47:46] = 0b11 (top two bits of
+ * the most-significant byte set). The remaining 46 bits come from hash.
  */
 
 #include "payload_builder.h"
@@ -39,47 +57,163 @@
 #include <zmk/events/wpm_state_changed.h>
 #endif
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-#include <zmk/events/split_peripheral_status_changed.h>
-#endif
-
 LOG_MODULE_REGISTER(ble_advertiser, LOG_LEVEL_INF);
 
 /* ── Advertising set ─────────────────────────────────────── */
 
 static struct bt_le_ext_adv *adv_set;
 
-/*
- * Manufacturer Specific Data layout:
- *   [0..1]  company ID (little-endian)
- *   [2..20] 19-byte keyboard payload
- */
 #define MFR_DATA_LEN (2u + PAYLOAD_LEN)
 static uint8_t mfr_data[MFR_DATA_LEN] = {
     (uint8_t)(CONFIG_BLE_ADVERTISER_COMPANY_ID & 0xFF),
     (uint8_t)(CONFIG_BLE_ADVERTISER_COMPANY_ID >> 8),
-    /* payload bytes follow — updated before advertising starts */
 };
 
 static struct bt_data ad[] = {
     BT_DATA(BT_DATA_MANUFACTURER_DATA, mfr_data, MFR_DATA_LEN),
 };
 
-/* ── Advertising update ──────────────────────────────────── */
+/* ── Deterministic random-static address ─────────────────── */
+
+#if IS_ENABLED(CONFIG_BLE_ADVERTISER_SEPARATE_ADDR)
+
+/**
+ * Build a BLE random-static address from the keyboard name.
+ *
+ * FNV-1a over the name gives 32 bits; a second pass with a different
+ * seed gives another 32 bits — together 64 bits, of which we use 46
+ * (the address field minus the two mandatory top bits).
+ *
+ * Random-static address format (Bluetooth Core Spec Vol 6, Part B, §1.3):
+ *   bits[47:46] must be 0b11  (set via | 0xC0 on the MSB)
+ *   bits[45:0]  random
+ */
+static void build_status_addr(bt_addr_t *addr)
+{
+    const char *name = CONFIG_ZMK_KEYBOARD_NAME;
+    uint32_t h1, h2;
+
+    /* FNV-1a, two independent passes */
+    h1 = 2166136261u;
+    for (const char *p = name; *p; p++) {
+        h1 ^= (uint8_t)*p;
+        h1 *= 16777619u;
+    }
+    h2 = h1 ^ 0xDEADBEEFu;
+    for (const char *p = name; *p; p++) {
+        h2 ^= (uint8_t)*p;
+        h2 *= 16777619u;
+    }
+
+    /*
+     * Pack into 6 bytes (little-endian as Zephyr stores BT addresses).
+     * val[5] is the most-significant byte in the BT address on air.
+     */
+    addr->val[0] = (uint8_t)(h1);
+    addr->val[1] = (uint8_t)(h1 >>  8);
+    addr->val[2] = (uint8_t)(h1 >> 16);
+    addr->val[3] = (uint8_t)(h2);
+    addr->val[4] = (uint8_t)(h2 >>  8);
+    addr->val[5] = (uint8_t)(h2 >> 16) | 0xC0u; /* set random-static bits */
+}
+
+#endif /* CONFIG_BLE_ADVERTISER_SEPARATE_ADDR */
+
+/* ── Advertising interval helper ─────────────────────────── */
+
+/* Zephyr advertising interval unit = 0.625 ms */
+#define MS_TO_ADV_UNITS(ms) ((ms) * 8u / 5u)
+
+/* ── Lazy advertising set creation ──────────────────────────
+ *
+ * Called from a work item so it runs in the system workqueue context,
+ * after the BT controller has had time to finish initialisation.
+ * Reschedules itself with backoff on failure.
+ */
+static void adv_create_work_fn(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(adv_create_work, adv_create_work_fn);
+
+static void adv_create_work_fn(struct k_work *work)
+{
+    if (adv_set != NULL) {
+        return; /* already created */
+    }
+
+    static const struct bt_le_adv_param adv_param = {
+#if IS_ENABLED(CONFIG_BLE_ADVERTISER_SEPARATE_ADDR)
+        /* No USE_IDENTITY — we will set our own random-static addr. */
+        .options      = BT_LE_ADV_OPT_NONE,
+#else
+        /* Share the identity MAC with ZMK's HID advertising. */
+        .options      = BT_LE_ADV_OPT_USE_IDENTITY,
+#endif
+        .interval_min = MS_TO_ADV_UNITS(CONFIG_BLE_ADVERTISER_INTERVAL_MIN_MS),
+        .interval_max = MS_TO_ADV_UNITS(CONFIG_BLE_ADVERTISER_INTERVAL_MAX_MS),
+        .peer         = NULL,
+    };
+
+    int err = bt_le_ext_adv_create(&adv_param, NULL, &adv_set);
+    if (err) {
+        LOG_DBG("bt_le_ext_adv_create failed (%d), retrying...", err);
+        /* Retry in 500 ms — BT controller may still be initialising. */
+        k_work_reschedule(&adv_create_work, K_MSEC(500));
+        return;
+    }
+
+#if IS_ENABLED(CONFIG_BLE_ADVERTISER_SEPARATE_ADDR)
+    /* Assign the deterministic random-static address to this set. */
+    bt_addr_t status_addr;
+    build_status_addr(&status_addr);
+
+    err = bt_le_ext_adv_set_addr(adv_set, &status_addr);
+    if (err) {
+        LOG_WRN("bt_le_ext_adv_set_addr failed (%d) — using identity", err);
+    } else {
+        /*
+         * Log the MAC in big-endian display order (val[5]..val[0])
+         * so the user can paste it directly into CONFIG_BLE_TARGET_ADDR.
+         */
+        LOG_INF("Status advertiser MAC (use as CONFIG_BLE_TARGET_ADDR):");
+        LOG_INF("  %02X:%02X:%02X:%02X:%02X:%02X",
+                status_addr.val[5], status_addr.val[4],
+                status_addr.val[3], status_addr.val[2],
+                status_addr.val[1], status_addr.val[0]);
+    }
+#endif
+
+    /* Set initial payload. */
+    payload_build(&mfr_data[2]);
+    err = bt_le_ext_adv_set_data(adv_set, ad, ARRAY_SIZE(ad), NULL, 0);
+    if (err) {
+        LOG_ERR("bt_le_ext_adv_set_data failed: %d", err);
+        return;
+    }
+
+    err = bt_le_ext_adv_start(adv_set, BT_LE_EXT_ADV_START_DEFAULT);
+    if (err) {
+        LOG_ERR("bt_le_ext_adv_start failed: %d", err);
+        return;
+    }
+
+    LOG_INF("BLE status advertising started (company 0x%04X, %d-%d ms)",
+            CONFIG_BLE_ADVERTISER_COMPANY_ID,
+            CONFIG_BLE_ADVERTISER_INTERVAL_MIN_MS,
+            CONFIG_BLE_ADVERTISER_INTERVAL_MAX_MS);
+}
+
+/* ── Payload update ──────────────────────────────────────── */
 
 static void do_update(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(update_work, do_update);
 
-/* Minimum ms between two consecutive advertising data updates. */
 #define UPDATE_THROTTLE_MS 50
 
 static void do_update(struct k_work *work)
 {
     if (adv_set == NULL) {
-        return;
+        return; /* still initialising */
     }
 
-    /* Rebuild payload into the manufacturer data buffer (bytes 2+). */
     payload_build(&mfr_data[2]);
 
     int err = bt_le_ext_adv_set_data(adv_set, ad, ARRAY_SIZE(ad), NULL, 0);
@@ -88,13 +222,20 @@ static void do_update(struct k_work *work)
     }
 
 #if IS_ENABLED(CONFIG_ZMK_WPM)
-    /* Re-schedule for continuous WPM refresh. */
     k_work_reschedule(&update_work, K_MSEC(500));
 #endif
 }
 
 static void schedule_update(void)
 {
+    /*
+     * Kick off adv_set creation if it hasn't happened yet.
+     * This is a no-op if the work item is already scheduled or done.
+     */
+    if (adv_set == NULL) {
+        k_work_schedule(&adv_create_work, K_NO_WAIT);
+    }
+
     k_work_reschedule(&update_work, K_MSEC(UPDATE_THROTTLE_MS));
 }
 
@@ -114,7 +255,6 @@ static int on_battery_changed(const zmk_event_t *eh)
 
 ZMK_LISTENER(ble_adv_layer,   on_layer_changed);
 ZMK_LISTENER(ble_adv_battery, on_battery_changed);
-
 ZMK_SUBSCRIPTION(ble_adv_layer,   zmk_layer_state_changed);
 ZMK_SUBSCRIPTION(ble_adv_battery, zmk_battery_state_changed);
 
@@ -148,86 +288,24 @@ ZMK_LISTENER(ble_adv_wpm, on_wpm_changed);
 ZMK_SUBSCRIPTION(ble_adv_wpm, zmk_wpm_state_changed);
 #endif
 
-/*
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-static int on_periph_battery(const zmk_event_t *eh)
-{
-    const struct zmk_split_peripheral_status_changed *ev =
-        as_zmk_split_peripheral_status_changed(eh);
-
-    if (ev != NULL) {
-        payload_set_periph_batt(ev->connected ? ev->battery : 0xFFu);
-        schedule_update();
-    }
-    return ZMK_EV_EVENT_BUBBLE;
-}
-ZMK_LISTENER(ble_adv_periph, on_periph_battery);
-ZMK_SUBSCRIPTION(ble_adv_periph, zmk_split_peripheral_status_changed);
-#endif
-*/
-
 /* ── Module init ─────────────────────────────────────────── */
-
-/*
- * Advertising interval: Zephyr units are 0.625 ms per unit.
- * ms_to_units(x) = x * 1000 / 625 = x * 8 / 5
- */
-#define MS_TO_ADV_UNITS(ms) ((ms) * 8u / 5u)
 
 static int ble_advertiser_init(void)
 {
     payload_builder_init();
 
-    /* Build initial payload before advertising starts. */
-    payload_build(&mfr_data[2]);
-
     /*
-     * Non-connectable, non-scannable legacy PDU.
-     * BT_LE_ADV_OPT_USE_IDENTITY: same MAC as ZMK's HID advertising,
-     *   so the scanner sees one device with one address.
-     * No BT_LE_ADV_OPT_EXT_ADV: forces legacy PDU (31-byte limit),
-     *   received by passive scanners without scan requests.
+     * Do NOT call bt_le_ext_adv_create here. At APPLICATION priority 1,
+     * ZMK has called bt_enable() but its callback has not yet fired —
+     * the BT controller is not ready. adv_set creation is deferred to
+     * adv_create_work, which is triggered by the first ZMK event.
+     *
+     * Schedule an initial attempt with a short delay as a safety net
+     * for keyboards where no event fires quickly (e.g. idle at boot).
      */
-    static const struct bt_le_adv_param adv_param = {
-        .options     = BT_LE_ADV_OPT_USE_IDENTITY,
-        .interval_min = MS_TO_ADV_UNITS(CONFIG_BLE_ADVERTISER_INTERVAL_MIN_MS),
-        .interval_max = MS_TO_ADV_UNITS(CONFIG_BLE_ADVERTISER_INTERVAL_MAX_MS),
-        .peer        = NULL,
-    };
-
-    int err = bt_le_ext_adv_create(&adv_param, NULL, &adv_set);
-    if (err) {
-        LOG_ERR("Failed to create advertising set: %d", err);
-        return err;
-    }
-
-    err = bt_le_ext_adv_set_data(adv_set, ad, ARRAY_SIZE(ad), NULL, 0);
-    if (err) {
-        LOG_ERR("Failed to set advertising data: %d", err);
-        return err;
-    }
-
-    err = bt_le_ext_adv_start(adv_set, BT_LE_EXT_ADV_START_DEFAULT);
-    if (err) {
-        LOG_ERR("Failed to start advertising: %d", err);
-        return err;
-    }
-
-    LOG_INF("BLE status advertising started (company 0x%04X, interval %d-%d ms)",
-            CONFIG_BLE_ADVERTISER_COMPANY_ID,
-            CONFIG_BLE_ADVERTISER_INTERVAL_MIN_MS,
-            CONFIG_BLE_ADVERTISER_INTERVAL_MAX_MS);
-
-#if IS_ENABLED(CONFIG_ZMK_WPM)
-    /* Kick off periodic WPM refresh. */
-    k_work_reschedule(&update_work, K_MSEC(500));
-#endif
+    k_work_schedule(&adv_create_work, K_MSEC(2000));
 
     return 0;
 }
 
-/*
- * Priority must be > CONFIG_ZMK_BLE_INIT_PRIORITY (default 0) so that
- * the Bluetooth stack is fully ready before we call bt_le_ext_adv_create.
- */
 SYS_INIT(ble_advertiser_init, APPLICATION, CONFIG_BLE_ADVERTISER_INIT_PRIORITY);

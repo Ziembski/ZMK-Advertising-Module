@@ -33,20 +33,15 @@ LOG_MODULE_DECLARE(ble_advertiser, LOG_LEVEL_DBG);
 
 /* ── Keyboard ID — FNV-1a hash of keyboard name ─────────── */
 
-/* Pre-computed at init time; immutable after that. */
 static uint8_t keyboard_id[6];
 
-/**
- * FNV-1a 32-bit hash over a NUL-terminated string.
- * Running two independent passes gives us 6 bytes without extra libs.
- */
 static uint32_t fnv1a32(const char *str, uint32_t seed)
 {
     uint32_t h = seed;
 
     for (; *str; str++) {
         h ^= (uint8_t)*str;
-        h *= 16777619u; /* FNV prime */
+        h *= 16777619u;
     }
     return h;
 }
@@ -54,8 +49,8 @@ static uint32_t fnv1a32(const char *str, uint32_t seed)
 void payload_builder_init(void)
 {
     const char *name = CONFIG_ZMK_KEYBOARD_NAME;
-    uint32_t h1 = fnv1a32(name, 2166136261u);           /* FNV offset basis */
-    uint32_t h2 = fnv1a32(name, h1 ^ 0xA5A5A5A5u);     /* second pass */
+    uint32_t h1 = fnv1a32(name, 2166136261u);
+    uint32_t h2 = fnv1a32(name, h1 ^ 0xA5A5A5A5u);
 
     keyboard_id[0] = (uint8_t)(h1 >> 24);
     keyboard_id[1] = (uint8_t)(h1 >> 16);
@@ -69,9 +64,8 @@ void payload_builder_init(void)
             keyboard_id[3], keyboard_id[4], keyboard_id[5]);
 }
 
-/* ── Peripheral battery (set from event, read from build) ── */
+/* ── Peripheral battery ──────────────────────────────────── */
 
-/* 0xFF = no peripheral connected. Updated by ble_advertiser.c. */
 static uint8_t periph_batt = 0xFFu;
 
 void payload_set_periph_batt(uint8_t level)
@@ -98,21 +92,21 @@ void payload_build(uint8_t out[PAYLOAD_LEN])
     out[7] = 0u;
 #endif
 
-    /* Byte 8: charging (proxy: USB power present) */
+    /* Byte 8: USB power present (proxy for charging) */
 #if IS_ENABLED(CONFIG_ZMK_USB)
     out[8] = zmk_usb_is_powered() ? 1u : 0u;
 #else
     out[8] = 0u;
 #endif
 
-    /* Byte 9: USB bus connected */
+    /* Byte 9: USB HID connected */
 #if IS_ENABLED(CONFIG_ZMK_USB)
     out[9] = (zmk_usb_get_conn_state() == ZMK_USB_CONN_HID) ? 1u : 0u;
 #else
     out[9] = 0u;
 #endif
 
-    /* Byte 10: BLE profile connected */
+    /* Byte 10: active BLE profile connected */
 #if IS_ENABLED(CONFIG_ZMK_BLE)
     out[10] = zmk_ble_active_profile_is_connected() ? 1u : 0u;
 #else
@@ -134,7 +128,6 @@ void payload_build(uint8_t out[PAYLOAD_LEN])
         }
         memcpy(&out[12], label, len);
     } else {
-        /* No label — encode layer index as decimal string ("L3", etc.) */
         out[12] = 'L';
         out[13] = '0' + (active_layer % 10u);
     }
