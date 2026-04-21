@@ -165,9 +165,9 @@ static void adv_create_work_fn(struct k_work *work)
     bt_addr_t status_addr;
     build_status_addr(&status_addr);
 
-    err = bt_id_set_adv_random_addr(adv_set, &status_addr);
+    err = bt_le_ext_adv_set_addr(adv_set, &status_addr);
     if (err) {
-        LOG_WRN("bt_id_set_adv_random_addr failed (%d) — using identity", err);
+        LOG_WRN("bt_le_ext_adv_set_addr failed (%d) — using identity", err);
     } else {
         /*
          * Log the MAC in big-endian display order (val[5]..val[0])
