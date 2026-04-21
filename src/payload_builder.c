@@ -124,7 +124,7 @@ void payload_build(uint8_t out[PAYLOAD_LEN])
 
     /* Bytes 12-17: active layer name (ASCII, zero-padded) */
     uint8_t active_layer = zmk_keymap_highest_layer_active();
-    const char *label    = zmk_keymap_layer_label(active_layer);
+    const char *label    = zmk_keymap_layer_name(active_layer);
 
     if (label != NULL && label[0] != '\0') {
         size_t len = strlen(label);
