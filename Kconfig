@@ -1,0 +1,47 @@
+config BLE_ADVERTISER
+    bool "BLE Keyboard Status Advertiser"
+    depends on BT
+    select BT_EXT_ADV
+    help
+      Broadcasts keyboard status (battery, layer, profile, WPM, etc.)
+      as a non-connectable BLE advertisement using a separate advertising
+      set that runs alongside ZMK's own HID advertising.
+
+      The 19-byte manufacturer-specific payload is compatible with the
+      BLE Scanner companion firmware (adv_parser.h wire layout).
+
+if BLE_ADVERTISER
+
+config BLE_ADVERTISER_INIT_PRIORITY
+    int "Initialisation priority (APPLICATION level)"
+    default 1
+    help
+      SYS_INIT priority at APPLICATION level.
+      Must be greater than CONFIG_ZMK_BLE_INIT_PRIORITY (default 0)
+      so that the BT stack is fully ready before this module starts.
+
+config BLE_ADVERTISER_COMPANY_ID
+    hex "Manufacturer Specific Data company ID"
+    default 0xFFFF
+    help
+      2-byte little-endian company ID prepended to the payload.
+      0xFFFF is the test/prototype ID (no Bluetooth SIG assignment).
+      Must match KBD_ADV_COMPANY_ID in the BLE Scanner firmware.
+
+config BLE_ADVERTISER_INTERVAL_MIN_MS
+    int "Minimum advertising interval (ms)"
+    default 200
+    range 100 10000
+    help
+      Minimum interval between advertisement packets.
+      200 ms is a good balance between discoverability and power use.
+      The scanner refreshes every 100 ms, so ≤200 ms ensures fresh data.
+
+config BLE_ADVERTISER_INTERVAL_MAX_MS
+    int "Maximum advertising interval (ms)"
+    default 500
+    range 100 10000
+    help
+      Maximum interval between advertisement packets.
+
+endif # BLE_ADVERTISER

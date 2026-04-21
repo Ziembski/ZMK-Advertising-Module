@@ -1,0 +1,62 @@
+name: Build Module
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build with nice_nano_v2 + ZMK
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout module
+        uses: actions/checkout@v4
+        with:
+          path: modules/ble-advertiser
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install west
+        run: pip install west
+
+      # Use the test keyboard config bundled in this repo
+      - name: West init from test config
+        run: west init -l modules/ble-advertiser/tests/keyboard
+
+      - name: West update
+        run: west update --narrow -o=--depth=1
+
+      - name: Install Zephyr Python requirements
+        run: pip install -r zephyr/scripts/requirements-base.txt
+
+      - name: Install Zephyr SDK (ARM only)
+        run: |
+          wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v1.0.0/zephyr-sdk-1.0.0_linux-x86_64_minimal.tar.xz
+          tar -xf zephyr-sdk-1.0.0_linux-x86_64_minimal.tar.xz -C $HOME
+          $HOME/zephyr-sdk-1.0.0/setup.sh -t arm-zephyr-eabi -h
+
+      - name: West export
+        run: west zephyr-export
+
+      - name: Build test keyboard
+        env:
+          ZEPHYR_TOOLCHAIN_VARIANT: zephyr
+        run: |
+          west build \
+            --board nice_nano_v2 \
+            --pristine always \
+            modules/ble-advertiser/tests/keyboard
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-build-${{ github.sha }}
+          path: build/zephyr/zephyr.uf2
+          if-no-files-found: warn
