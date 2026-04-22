@@ -285,12 +285,27 @@ ZMK_SUBSCRIPTION(ble_adv_wpm, zmk_wpm_state_changed);
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+/*
+ * zmk_split_peripheral_status_changed has two fields:
+ *   - uint8_t slot   (which peripheral slot)
+ *   - bool connected (connected or disconnected)
+ *
+ * There is NO battery field. Peripheral battery is fetched separately
+ * by ZMK via BLE GATT BAS when CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING=y,
+ * but zmk_battery_state_changed does not yet carry a source field to
+ * distinguish central from peripheral. We therefore:
+ *   - Set periph_batt = 0xFF (sentinel: no peripheral) on disconnect.
+ *   - Set periph_batt = 0    (unknown, will be updated later) on connect.
+ * If you enable CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING=y,
+ * the peripheral battery level will be proxied over BLE BAS but cannot
+ * yet be read back here without a ZMK API for per-slot battery level.
+ */
 static int on_periph_status(const zmk_event_t *eh)
 {
     const struct zmk_split_peripheral_status_changed *ev =
         as_zmk_split_peripheral_status_changed(eh);
     if (ev != NULL) {
-        payload_set_periph_batt(ev->connected ? ev->battery : 0xFFu);
+        payload_set_periph_batt(ev->connected ? 0u : 0xFFu);
         schedule_update(false);
     }
     return ZMK_EV_EVENT_BUBBLE;
