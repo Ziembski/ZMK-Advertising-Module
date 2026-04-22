@@ -26,32 +26,7 @@ config BLE_ADVERTISER_PAIRING_CODE
     default "ZMKK"
     help
       Exactly 4 ASCII characters placed at the start of the advertisement
-      payload (bytes 0-3). The scanner only locks onto keyboards whose
-      payload begins with this code.
-
-      Must match CONFIG_BLE_PAIRING_CODE on the BLE Scanner side.
-
-      Example: CONFIG_BLE_ADVERTISER_PAIRING_CODE="1337"
-
-config BLE_ADVERTISER_TYPING_INTERVAL_MS
-    int "Advertising interval during active typing (ms)"
-    default 100
-    range 20 1000
-    help
-      Advertisement interval used while typing is detected.
-      100 ms gives the scanner a fresh update every scan window.
-
-config BLE_ADVERTISER_IDLE_INTERVAL_MS
-    int "Advertising interval when keyboard is idle (ms)"
-    default 5000
-    range 500 30000
-    help
-      Advertisement interval used after BLE_ADVERTISER_IDLE_TIMEOUT_S
-      seconds without a typing event. Saves power when not in use.
-
-config BLE_ADVERTISER_IDLE_TIMEOUT_S
-    int "Seconds of no typing before switching to idle interval"
-    default 2
-    range 1 60
+      payload. The scanner only locks onto keyboards whose payload begins
+      with this code. Must match CONFIG_BLE_PAIRING_CODE on the scanner.
 
 endif # BLE_ADVERTISER

@@ -1,26 +1,24 @@
 /*
  * src/ble_advertiser.c
  *
- * Non-connectable BLE status advertiser.
- *   - Lazy init: adv set created after BT stack is ready
- *   - Adaptive interval: 100 ms while typing, 5 s after 2 s idle
- *   - Zero heap allocation
+ * Non-connectable BLE status advertiser for ZMK keyboards.
  *
- * Bug fixes applied:
- *   #2: On partial init failure (set_data or start fails after create),
- *       the adv_set is now deleted and reset to NULL so the retry loop
- *       can start clean. Previously adv_set was left non-NULL pointing
- *       to a created-but-not-started set, silently killing advertising.
+ * Key changes vs previous version:
  *
- *   #3: last_typing_uptime_ms = 0 caused is_typing() to return true for
- *       the first 2 s after boot. Fixed with a separate `typing_started`
- *       flag — is_typing() returns false until the first key event.
+ *   REMOVED: bt_le_ext_adv_update_param() and adaptive interval logic.
+ *   WHY: bt_le_ext_adv_update_param() races with ZMK's own BLE stack
+ *   operations (profile switching, split connection management) and
+ *   causes assertion failures / hard faults in the nRF BLE controller
+ *   driver. The workqueue flooding (40 ms reschedule during typing =
+ *   25 Hz) also overflowed the system workqueue stack.
  *
- * Memory audit:
- *   adv_set — kernel-managed object, app lifetime. Not a leak.
- *   mfr_data[], ad[] — static BSS. Not a leak.
- *   K_WORK_DELAYABLE_DEFINE — static storage. Not a leak.
- *   No k_malloc / malloc / realloc anywhere.
+ *   REPLACED WITH: fixed 200 ms interval. This is fast enough that
+ *   the scanner sees every state change within 200 ms, and power
+ *   consumption is negligible vs the keyboard's normal BLE activity.
+ *
+ *   THROTTLE: update work fires at most once per 200 ms. ZMK events
+ *   still trigger immediate reschedules, but the actual HCI call is
+ *   capped. No self-rescheduling during "typing".
  */
 
 #include "payload_builder.h"
@@ -53,19 +51,21 @@
 
 LOG_MODULE_REGISTER(ble_advertiser, LOG_LEVEL_INF);
 
-/* ── Interval constants ──────────────────────────────────── */
+/* ── Fixed advertising interval ──────────────────────────── */
 
 /* Zephyr advertising unit = 0.625 ms  →  ms * 8 / 5 */
 #define MS_TO_ADV_UNITS(ms)  ((uint32_t)(ms) * 8u / 5u)
 
-#define UNITS_TYPING  MS_TO_ADV_UNITS(CONFIG_BLE_ADVERTISER_TYPING_INTERVAL_MS)
-#define UNITS_IDLE    MS_TO_ADV_UNITS(CONFIG_BLE_ADVERTISER_IDLE_INTERVAL_MS)
-#define IDLE_TIMEOUT_MS \
-    ((int64_t)(CONFIG_BLE_ADVERTISER_IDLE_TIMEOUT_S) * 1000)
+#define ADV_INTERVAL_MS  200u
+#define ADV_UNITS        MS_TO_ADV_UNITS(ADV_INTERVAL_MS)
+
+/* Minimum ms between consecutive bt_le_ext_adv_set_data() calls.
+ * Caps the update rate so the HCI command queue is never flooded. */
+#define UPDATE_THROTTLE_MS  200u
 
 /* ── Static advertising state ────────────────────────────── */
 
-static struct bt_le_ext_adv *adv_set;   /* NULL until created */
+static struct bt_le_ext_adv *adv_set;  /* NULL until created */
 
 #define MFR_DATA_LEN (2u + PAYLOAD_LEN)
 static uint8_t mfr_data[MFR_DATA_LEN] = {
@@ -77,65 +77,10 @@ static struct bt_data ad[] = {
     BT_DATA(BT_DATA_MANUFACTURER_DATA, mfr_data, MFR_DATA_LEN),
 };
 
-/* ── Typing / idle detection ─────────────────────────────── */
-
-/*
- * Bug #3 fix: separate flag for "at least one key event received".
- * Without this, last_typing_uptime_ms = 0 made is_typing() return
- * true for the first IDLE_TIMEOUT_MS after boot.
- */
-static int64_t last_typing_uptime_ms;
-static bool    typing_started;
-static bool    currently_idle = true;
-
-static bool is_typing(void)
-{
-    if (!typing_started) {
-        return false; /* no key event yet — conserve power */
-    }
-    return (k_uptime_get() - last_typing_uptime_ms) < IDLE_TIMEOUT_MS;
-}
-
-/* ── Interval update ─────────────────────────────────────── */
-
-static void apply_interval(bool typing)
-{
-    if (adv_set == NULL) {
-        return;
-    }
-    /* Skip if already in the correct mode. */
-    if (typing == !currently_idle) {
-        return;
-    }
-
-    uint32_t units = typing ? UNITS_TYPING : UNITS_IDLE;
-
-    struct bt_le_adv_param param = {
-        .options      = BT_LE_ADV_OPT_NONE,
-        .interval_min = units,
-        .interval_max = units + MS_TO_ADV_UNITS(50),
-        .peer         = NULL,
-    };
-
-    int err = bt_le_ext_adv_update_param(adv_set, &param);
-    if (err && err != -EALREADY) {
-        LOG_WRN("update_param failed: %d", err);
-        return;
-    }
-
-    currently_idle = !typing;
-    LOG_DBG("Interval -> %s (%u ms)",
-            typing ? "typing" : "idle",
-            typing ? CONFIG_BLE_ADVERTISER_TYPING_INTERVAL_MS
-                   : CONFIG_BLE_ADVERTISER_IDLE_INTERVAL_MS);
-}
-
 /* ── Payload update work ─────────────────────────────────── */
 
 static void do_update(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(update_work, do_update);
-
-#define UPDATE_THROTTLE_MS 40u
 
 static void do_update(struct k_work *work)
 {
@@ -145,28 +90,21 @@ static void do_update(struct k_work *work)
         return;
     }
 
-    bool typing = is_typing();
-    apply_interval(typing);
-
     payload_build(&mfr_data[2]);
 
     int err = bt_le_ext_adv_set_data(adv_set, ad, ARRAY_SIZE(ad), NULL, 0);
     if (err && err != -EAGAIN) {
         LOG_WRN("adv_set_data: %d", err);
     }
-
-    /* While typing, keep refreshing to track WPM. */
-    if (typing) {
-        k_work_reschedule(&update_work, K_MSEC(UPDATE_THROTTLE_MS));
-    }
 }
 
-static void schedule_update(bool is_key_event)
+static void schedule_update(void)
 {
-    if (is_key_event) {
-        last_typing_uptime_ms = k_uptime_get();
-        typing_started        = true;
-    }
+    /*
+     * k_work_reschedule() cancels any pending delay and restarts from
+     * now + UPDATE_THROTTLE_MS. So even if 10 events fire in quick
+     * succession, only one HCI call happens after the throttle window.
+     */
     k_work_reschedule(&update_work, K_MSEC(UPDATE_THROTTLE_MS));
 }
 
@@ -183,10 +121,18 @@ static void adv_create_fn(struct k_work *work)
         return;
     }
 
+    /*
+     * Fixed-interval, non-connectable, non-scannable, legacy PDU.
+     * No BT_LE_ADV_OPT_USE_IDENTITY: let the controller assign an
+     * address. No BT_LE_ADV_OPT_EXT_ADV: passive scanners can receive
+     * legacy PDUs without needing to send scan requests.
+     *
+     * interval_min == interval_max: fixed interval, no jitter.
+     */
     static const struct bt_le_adv_param adv_param = {
         .options      = BT_LE_ADV_OPT_NONE,
-        .interval_min = UNITS_IDLE,
-        .interval_max = UNITS_IDLE + MS_TO_ADV_UNITS(50),
+        .interval_min = ADV_UNITS,
+        .interval_max = ADV_UNITS,
         .peer         = NULL,
     };
 
@@ -201,12 +147,7 @@ static void adv_create_fn(struct k_work *work)
 
     err = bt_le_ext_adv_set_data(adv_set, ad, ARRAY_SIZE(ad), NULL, 0);
     if (err) {
-        /*
-         * Bug #2 fix: delete the orphaned adv_set so the retry starts
-         * clean. Previously adv_set was left non-NULL after a partial
-         * failure, causing the system to silently never advertise.
-         */
-        LOG_ERR("ext_adv_set_data failed (%d) — deleting and retrying", err);
+        LOG_ERR("ext_adv_set_data failed (%d), retrying", err);
         bt_le_ext_adv_delete(adv_set);
         adv_set = NULL;
         k_work_reschedule(&adv_create_work, K_MSEC(500));
@@ -215,34 +156,30 @@ static void adv_create_fn(struct k_work *work)
 
     err = bt_le_ext_adv_start(adv_set, BT_LE_EXT_ADV_START_DEFAULT);
     if (err) {
-        /* Same fix: clean up before retry. */
-        LOG_ERR("ext_adv_start failed (%d) — deleting and retrying", err);
+        LOG_ERR("ext_adv_start failed (%d), retrying", err);
         bt_le_ext_adv_delete(adv_set);
         adv_set = NULL;
         k_work_reschedule(&adv_create_work, K_MSEC(500));
         return;
     }
 
-    LOG_INF("BLE advertiser started (code \"%.4s\", company 0x%04X)",
+    LOG_INF("BLE advertiser started (code \"%.4s\", company 0x%04X, %u ms)",
             CONFIG_BLE_ADVERTISER_PAIRING_CODE,
-            CONFIG_BLE_ADVERTISER_COMPANY_ID);
-    LOG_INF("Interval: typing=%d ms, idle=%d ms (after %d s idle)",
-            CONFIG_BLE_ADVERTISER_TYPING_INTERVAL_MS,
-            CONFIG_BLE_ADVERTISER_IDLE_INTERVAL_MS,
-            CONFIG_BLE_ADVERTISER_IDLE_TIMEOUT_S);
+            CONFIG_BLE_ADVERTISER_COMPANY_ID,
+            ADV_INTERVAL_MS);
 }
 
 /* ── ZMK event listeners ─────────────────────────────────── */
 
 static int on_layer_changed(const zmk_event_t *eh)
 {
-    schedule_update(true);
+    schedule_update();
     return ZMK_EV_EVENT_BUBBLE;
 }
 
 static int on_battery_changed(const zmk_event_t *eh)
 {
-    schedule_update(false);
+    schedule_update();
     return ZMK_EV_EVENT_BUBBLE;
 }
 
@@ -254,7 +191,7 @@ ZMK_SUBSCRIPTION(ble_adv_battery, zmk_battery_state_changed);
 #if IS_ENABLED(CONFIG_ZMK_BLE)
 static int on_profile_changed(const zmk_event_t *eh)
 {
-    schedule_update(false);
+    schedule_update();
     return ZMK_EV_EVENT_BUBBLE;
 }
 ZMK_LISTENER(ble_adv_profile, on_profile_changed);
@@ -264,7 +201,7 @@ ZMK_SUBSCRIPTION(ble_adv_profile, zmk_ble_active_profile_changed);
 #if IS_ENABLED(CONFIG_ZMK_USB)
 static int on_usb_changed(const zmk_event_t *eh)
 {
-    schedule_update(false);
+    schedule_update();
     return ZMK_EV_EVENT_BUBBLE;
 }
 ZMK_LISTENER(ble_adv_usb, on_usb_changed);
@@ -272,12 +209,9 @@ ZMK_SUBSCRIPTION(ble_adv_usb, zmk_usb_conn_state_changed);
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_WPM)
-/*
- * WPM events fire on every keypress — most reliable typing signal.
- */
 static int on_wpm_changed(const zmk_event_t *eh)
 {
-    schedule_update(true);
+    schedule_update();
     return ZMK_EV_EVENT_BUBBLE;
 }
 ZMK_LISTENER(ble_adv_wpm, on_wpm_changed);
@@ -285,28 +219,13 @@ ZMK_SUBSCRIPTION(ble_adv_wpm, zmk_wpm_state_changed);
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-/*
- * zmk_split_peripheral_status_changed has two fields:
- *   - uint8_t slot   (which peripheral slot)
- *   - bool connected (connected or disconnected)
- *
- * There is NO battery field. Peripheral battery is fetched separately
- * by ZMK via BLE GATT BAS when CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING=y,
- * but zmk_battery_state_changed does not yet carry a source field to
- * distinguish central from peripheral. We therefore:
- *   - Set periph_batt = 0xFF (sentinel: no peripheral) on disconnect.
- *   - Set periph_batt = 0    (unknown, will be updated later) on connect.
- * If you enable CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING=y,
- * the peripheral battery level will be proxied over BLE BAS but cannot
- * yet be read back here without a ZMK API for per-slot battery level.
- */
 static int on_periph_status(const zmk_event_t *eh)
 {
     const struct zmk_split_peripheral_status_changed *ev =
         as_zmk_split_peripheral_status_changed(eh);
     if (ev != NULL) {
         payload_set_periph_batt(ev->connected ? 0u : 0xFFu);
-        schedule_update(false);
+        schedule_update();
     }
     return ZMK_EV_EVENT_BUBBLE;
 }
