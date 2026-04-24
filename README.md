@@ -5,30 +5,26 @@ advertisement, readable by the companion [BLE Scanner](https://github.com/<your-
 
 ## What it advertises
 
-A 19-byte manufacturer-specific payload (after a 2-byte company ID):
+A 23-byte manufacturer-specific payload (after a 2-byte company ID):
 
 | Bytes | Field | Notes |
 |-------|-------|-------|
-| 0–5   | Keyboard ID | FNV-1a hash of `CONFIG_ZMK_KEYBOARD_NAME` |
-| 6     | Battery % | Central battery, 0–100 |
-| 7     | Profile slot | Active BLE profile, 0-based |
-| 8     | Charging | 1 = USB power present |
-| 9     | USB connected | 1 = USB HID active |
-| 10    | BLE connected | 1 = active profile connected |
-| 11    | Peripheral battery | 0–100 %, `0xFF` = no peripheral |
-| 12–17 | Layer name | ASCII, zero-padded |
-| 18    | WPM | Words per minute (0 if disabled) |
+| 0–3   | Pairing code | 4 ASCII chars — must match scanner |
+| 4–9   | Keyboard ID | FNV-1a hash of `CONFIG_ZMK_KEYBOARD_NAME` |
+| 10    | Battery % | Central (right half) battery, 0–100 |
+| 11    | Profile slot | Active BLE profile, 0-based |
+| 12    | Charging | 1 = USB power present |
+| 13    | USB connected | 1 = USB HID active |
+| 14    | BLE connected | 1 = active profile connected |
+| 15    | Peripheral battery | 0–100 %, `0xFF` = no peripheral |
+| 16–21 | Layer name | ASCII, zero-padded |
+| 22    | WPM | Words per minute (0 if disabled) |
 
 ## How it works
 
-A separate `bt_le_ext_adv` set runs **alongside** ZMK's existing HID
-advertising with no interference:
+A separate `bt_le_ext_adv` set runs **alongside** ZMK's existing HID advertising at a fixed 200 ms interval. The scanner locks onto the first device whose payload starts with the matching 4-byte pairing code — no MAC address configuration needed on either side.
 
-- **Legacy PDU** → received by passive scanners (no active scanning needed)
-- **`BT_LE_ADV_OPT_USE_IDENTITY`** → same MAC address as ZMK's HID
-  advertising, so the scanner sees one device with one address
-- Payload is rebuilt on every relevant ZMK event (layer change, battery
-  update, profile switch, USB state, WPM change)
+Payload is rebuilt on every ZMK event: layer change, battery update, profile switch, USB state change, WPM update.
 
 ---
 
@@ -58,55 +54,53 @@ manifest:
 ### 2. Add to your keyboard `.conf`
 
 ```ini
-# ── BLE Advertiser (required) ──────────────────────────────
 CONFIG_BLE_ADVERTISER=y
 
-# BT_EXT_ADV is selected automatically, but you need a second adv set:
-CONFIG_BT_EXT_ADV_MAX_ADV_SET=2
-
-# ── Optional features that fill in more payload fields ──────
-CONFIG_ZMK_WPM=y               # byte 18: WPM
+# Optional — fills in the WPM field
+CONFIG_ZMK_WPM=y
 ```
 
-> For split keyboards, `CONFIG_ZMK_SPLIT=y` and
-> `CONFIG_ZMK_SPLIT_ROLE_CENTRAL=y` are already set by ZMK.
-> Peripheral battery (byte 11) is populated automatically when enabled.
+`CONFIG_BT_EXT_ADV=y` and `CONFIG_BT_EXT_ADV_MAX_ADV_SET=2` are selected/defaulted automatically by the module.
 
-### 3. (Optional) Customise in `.conf`
+For split keyboards `CONFIG_ZMK_SPLIT=y` and `CONFIG_ZMK_SPLIT_ROLE_CENTRAL=y` are already set by ZMK. Peripheral connection state is populated automatically.
 
+### 3. Set the pairing code (must match scanner)
+
+In your keyboard `.conf`:
 ```ini
-# Match this in BLE Scanner's KBD_ADV_COMPANY_ID:
-CONFIG_BLE_ADVERTISER_COMPANY_ID=0xFFFF
-
-# Advertising interval (ms). ≤200 ms keeps scanner display responsive.
-CONFIG_BLE_ADVERTISER_INTERVAL_MIN_MS=200
-CONFIG_BLE_ADVERTISER_INTERVAL_MAX_MS=500
+CONFIG_BLE_ADVERTISER_PAIRING_CODE="ZMKK"
 ```
-
-### 4. Find your MAC and configure the scanner
-
-Flash your keyboard. Use **nRF Connect** (mobile/desktop) or
-`bluetoothctl` to find the device. Its MAC will appear as both ZMK's
-HID device and the status advertiser (same address).
 
 In the BLE Scanner `prj.conf`:
 ```ini
-CONFIG_BLE_TARGET_ADDR="AA:BB:CC:DD:EE:FF"
+CONFIG_BLE_PAIRING_CODE="ZMKK"
 ```
+
+Both sides must use the same 4-character code. Change it to anything unique if you have multiple keyboards nearby.
+
+### 4. (Optional) Change the company ID
+
+```ini
+# Keyboard side
+CONFIG_BLE_ADVERTISER_COMPANY_ID=0xFFFF
+
+# Scanner side — must match
+CONFIG_BLE_COMPANY_ID=0xFFFF
+```
+
+`0xFFFF` (default) is the Bluetooth SIG test/prototype ID. Fine for personal use.
 
 ---
 
-## ZMK Kconfig options required on keyboard
+## Kconfig reference
 
-| Option | Required | Purpose |
-|--------|----------|---------|
-| `CONFIG_BLE_ADVERTISER=y` | ✅ | Enables this module |
-| `CONFIG_BT_EXT_ADV_MAX_ADV_SET=2` | ✅ | Second adv set alongside ZMK |
-| `CONFIG_ZMK_WPM=y` | Optional | Populates WPM field (byte 18) |
-| `CONFIG_ZMK_SPLIT=y` | If split | Enables split keyboard support |
-| `CONFIG_ZMK_SPLIT_ROLE_CENTRAL=y` | If split | Enables peripheral battery |
-
-`CONFIG_BT_EXT_ADV=y` is automatically selected by `CONFIG_BLE_ADVERTISER`.
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `CONFIG_BLE_ADVERTISER` | n | Enable this module |
+| `CONFIG_BLE_ADVERTISER_PAIRING_CODE` | `"ZMKK"` | 4-char lock code |
+| `CONFIG_BLE_ADVERTISER_COMPANY_ID` | `0xFFFF` | Manufacturer data company ID |
+| `CONFIG_BLE_ADVERTISER_INIT_PRIORITY` | `1` | SYS_INIT priority (must be > ZMK BLE) |
+| `CONFIG_ZMK_WPM` | n | Enables WPM field in payload |
 
 ---
 
