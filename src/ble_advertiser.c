@@ -1,24 +1,9 @@
 /*
- * src/ble_advertiser.c
- *
  * Non-connectable BLE status advertiser for ZMK keyboards.
- *
- * Key changes vs previous version:
- *
- *   REMOVED: bt_le_ext_adv_update_param() and adaptive interval logic.
- *   WHY: bt_le_ext_adv_update_param() races with ZMK's own BLE stack
- *   operations (profile switching, split connection management) and
- *   causes assertion failures / hard faults in the nRF BLE controller
- *   driver. The workqueue flooding (40 ms reschedule during typing =
- *   25 Hz) also overflowed the system workqueue stack.
- *
- *   REPLACED WITH: fixed 200 ms interval. This is fast enough that
- *   the scanner sees every state change within 200 ms, and power
- *   consumption is negligible vs the keyboard's normal BLE activity.
- *
- *   THROTTLE: update work fires at most once per 200 ms. ZMK events
- *   still trigger immediate reschedules, but the actual HCI call is
- *   capped. No self-rescheduling during "typing".
+ * Fixed 200 ms interval. Payload updated on ZMK events, throttled to
+ * one HCI call per 200 ms to avoid flooding the command queue.
+ * Advertising set creation is deferred 2 s after boot so the BT stack
+ * has time to fully initialise before we call bt_le_ext_adv_create().
  */
 
 #include "payload_builder.h"
@@ -51,21 +36,13 @@
 
 LOG_MODULE_REGISTER(ble_advertiser, LOG_LEVEL_INF);
 
-/* ── Fixed advertising interval ──────────────────────────── */
+/* Advertising unit = 0.625 ms */
+#define MS_TO_ADV_UNITS(ms)   ((uint32_t)(ms) * 8u / 5u)
+#define ADV_INTERVAL_MS       200u
+#define ADV_UNITS             MS_TO_ADV_UNITS(ADV_INTERVAL_MS)
+#define UPDATE_THROTTLE_MS    200u
 
-/* Zephyr advertising unit = 0.625 ms  →  ms * 8 / 5 */
-#define MS_TO_ADV_UNITS(ms)  ((uint32_t)(ms) * 8u / 5u)
-
-#define ADV_INTERVAL_MS  200u
-#define ADV_UNITS        MS_TO_ADV_UNITS(ADV_INTERVAL_MS)
-
-/* Minimum ms between consecutive bt_le_ext_adv_set_data() calls.
- * Caps the update rate so the HCI command queue is never flooded. */
-#define UPDATE_THROTTLE_MS  200u
-
-/* ── Static advertising state ────────────────────────────── */
-
-static struct bt_le_ext_adv *adv_set;  /* NULL until created */
+static struct bt_le_ext_adv *adv_set;
 
 #define MFR_DATA_LEN (2u + PAYLOAD_LEN)
 static uint8_t mfr_data[MFR_DATA_LEN] = {
@@ -77,21 +54,16 @@ static struct bt_data ad[] = {
     BT_DATA(BT_DATA_MANUFACTURER_DATA, mfr_data, MFR_DATA_LEN),
 };
 
-/* ── Payload update work ─────────────────────────────────── */
-
 static void do_update(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(update_work, do_update);
 
 static void do_update(struct k_work *work)
 {
     ARG_UNUSED(work);
-
     if (adv_set == NULL) {
         return;
     }
-
     payload_build(&mfr_data[2]);
-
     int err = bt_le_ext_adv_set_data(adv_set, ad, ARRAY_SIZE(ad), NULL, 0);
     if (err && err != -EAGAIN) {
         LOG_WRN("adv_set_data: %d", err);
@@ -100,15 +72,8 @@ static void do_update(struct k_work *work)
 
 static void schedule_update(void)
 {
-    /*
-     * k_work_reschedule() cancels any pending delay and restarts from
-     * now + UPDATE_THROTTLE_MS. So even if 10 events fire in quick
-     * succession, only one HCI call happens after the throttle window.
-     */
     k_work_reschedule(&update_work, K_MSEC(UPDATE_THROTTLE_MS));
 }
-
-/* ── Advertising set creation (deferred, with retry) ────── */
 
 static void adv_create_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(adv_create_work, adv_create_fn);
@@ -116,19 +81,10 @@ static K_WORK_DELAYABLE_DEFINE(adv_create_work, adv_create_fn);
 static void adv_create_fn(struct k_work *work)
 {
     ARG_UNUSED(work);
-
     if (adv_set != NULL) {
         return;
     }
 
-    /*
-     * Fixed-interval, non-connectable, non-scannable, legacy PDU.
-     * No BT_LE_ADV_OPT_USE_IDENTITY: let the controller assign an
-     * address. No BT_LE_ADV_OPT_EXT_ADV: passive scanners can receive
-     * legacy PDUs without needing to send scan requests.
-     *
-     * interval_min == interval_max: fixed interval, no jitter.
-     */
     static const struct bt_le_adv_param adv_param = {
         .options      = BT_LE_ADV_OPT_NONE,
         .interval_min = ADV_UNITS,
@@ -144,7 +100,6 @@ static void adv_create_fn(struct k_work *work)
     }
 
     payload_build(&mfr_data[2]);
-
     err = bt_le_ext_adv_set_data(adv_set, ad, ARRAY_SIZE(ad), NULL, 0);
     if (err) {
         LOG_ERR("ext_adv_set_data failed (%d), retrying", err);
@@ -163,13 +118,9 @@ static void adv_create_fn(struct k_work *work)
         return;
     }
 
-    LOG_INF("BLE advertiser started (code \"%.4s\", company 0x%04X, %u ms)",
-            CONFIG_BLE_ADVERTISER_PAIRING_CODE,
-            CONFIG_BLE_ADVERTISER_COMPANY_ID,
-            ADV_INTERVAL_MS);
+    LOG_INF("BLE advertiser started (code \"%.4s\", %u ms)",
+            CONFIG_BLE_ADVERTISER_PAIRING_CODE, ADV_INTERVAL_MS);
 }
-
-/* ── ZMK event listeners ─────────────────────────────────── */
 
 static int on_layer_changed(const zmk_event_t *eh)
 {
@@ -233,8 +184,6 @@ ZMK_LISTENER(ble_adv_periph, on_periph_status);
 ZMK_SUBSCRIPTION(ble_adv_periph, zmk_split_peripheral_status_changed);
 #endif
 
-/* ── Module init ─────────────────────────────────────────── */
-
 static int ble_advertiser_init(void)
 {
     payload_builder_init();
@@ -242,5 +191,4 @@ static int ble_advertiser_init(void)
     return 0;
 }
 
-SYS_INIT(ble_advertiser_init, APPLICATION,
-         CONFIG_BLE_ADVERTISER_INIT_PRIORITY);
+SYS_INIT(ble_advertiser_init, APPLICATION, CONFIG_BLE_ADVERTISER_INIT_PRIORITY);

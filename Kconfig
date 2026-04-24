@@ -30,3 +30,9 @@ config BLE_ADVERTISER_PAIRING_CODE
       with this code. Must match CONFIG_BLE_PAIRING_CODE on the scanner.
 
 endif # BLE_ADVERTISER
+
+config BT_EXT_ADV_MAX_ADV_SET
+    default 2
+    help
+      ZMK uses one advertising set for HID. This module needs a second
+      one for the status broadcast. Default is overridden here to 2.
