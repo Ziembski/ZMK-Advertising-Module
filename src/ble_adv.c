@@ -39,6 +39,7 @@
 
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 #include <zmk/hid_indicators.h>
+#include <zmk/endpoints.h>
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -226,9 +227,8 @@ static void build_payload(void) {
     }
 #endif
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
-    /* zmk_hid_indicators_get_profile() returns the USB HID LED byte for the
-     * given BLE profile. Caps Lock is bit 1 per the USB HID specification. */
-    if (zmk_hid_indicators_get_profile((uint8_t)zmk_ble_active_profile_index()) & BIT(1)) {
+    /* Indicators are tracked per endpoint; query the currently selected one. */
+    if (zmk_hid_indicators_get_profile(zmk_endpoints_selected()) & BIT(1)) {
         flags |= ZMK_BLE_ADV_FLAG_CAPS_LOCK;
     }
 #endif
