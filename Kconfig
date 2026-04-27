@@ -1,38 +1,69 @@
-config BLE_ADVERTISER
-    bool "BLE Keyboard Status Advertiser"
-    depends on BT
+config ZMK_BLE_ADV
+    bool "Enable ZMK BLE Status Advertisement"
+    default n
+    depends on ZMK_BLE
     select BT_EXT_ADV
     help
-      Broadcasts keyboard status as a non-connectable BLE advertisement
-      compatible with the BLE Scanner companion firmware.
-
-if BLE_ADVERTISER
-
-config BLE_ADVERTISER_INIT_PRIORITY
-    int "SYS_INIT priority (APPLICATION level)"
-    default 1
-    help
-      Must be > CONFIG_ZMK_BLE_INIT_PRIORITY (default 0).
-      Advertising set creation is deferred until BT is ready regardless.
-
-config BLE_ADVERTISER_COMPANY_ID
-    hex "Manufacturer Specific Data company ID"
-    default 0xFFFF
-    help
-      Must match KBD_ADV_COMPANY_ID in the BLE Scanner firmware.
-
-config BLE_ADVERTISER_PAIRING_CODE
-    string "4-character pairing code"
-    default "ZMKK"
-    help
-      Exactly 4 ASCII characters placed at the start of the advertisement
-      payload. The scanner only locks onto keyboards whose payload begins
-      with this code. Must match CONFIG_BLE_PAIRING_CODE on the scanner.
-
-endif # BLE_ADVERTISER
+      Broadcast keyboard status as non-connectable BLE manufacturer data.
+      Only the central half (or a standalone keyboard) will advertise.
+      Peripheral halves remain silent to preserve split communication.
 
 config BT_EXT_ADV_MAX_ADV_SET
-    default 2
+    default 2 if ZMK_BLE_ADV
+
+config ZMK_BLE_ADV_INTERVAL_MS
+    int "Periodic advertisement interval in milliseconds"
+    range 100 60000
+    default 1000
+    depends on ZMK_BLE_ADV
     help
-      ZMK uses one advertising set for HID. This module needs a second
-      one for the status broadcast. Default is overridden here to 2.
+      How often the status payload is broadcast when the keyboard is active
+      (i.e. a keypress occurred within ZMK_BLE_ADV_IDLE_TIMEOUT_MS).
+
+config ZMK_BLE_ADV_EVENT_THROTTLE_MS
+    int "Minimum interval between event-triggered advertisements in milliseconds"
+    range 50 5000
+    default 200
+    depends on ZMK_BLE_ADV
+    help
+      Keypresses, layer changes, and profile changes all trigger an immediate
+      advertisement update. This value is the minimum time that must elapse
+      between two such event-driven updates.
+
+config ZMK_BLE_ADV_IDLE_TIMEOUT_MS
+    int "Inactivity period before entering idle mode in milliseconds"
+    range 1000 300000
+    default 10000
+    depends on ZMK_BLE_ADV
+    help
+      If no keypress is detected for this many milliseconds the module
+      switches to the idle advertisement interval.
+
+config ZMK_BLE_ADV_IDLE_INTERVAL_MS
+    int "Advertisement interval in idle mode in milliseconds"
+    range 1000 300000
+    default 30000
+    depends on ZMK_BLE_ADV
+    help
+      Advertisement interval used when the keyboard is idle. Set this to a
+      value longer than the scanner's timeout to allow the scanner to detect
+      the idle state. Must be greater than ZMK_BLE_ADV_INTERVAL_MS.
+
+config ZMK_BLE_ADV_WPM_WINDOW_SECONDS
+    int "WPM rolling window in seconds"
+    range 5 60
+    default 30
+    depends on ZMK_BLE_ADV
+    help
+      Number of seconds used to compute the rolling words-per-minute value.
+      Shorter windows react faster but are more noisy.
+
+config ZMK_BLE_ADV_LAYER_NAMES
+    bool "Include layer names in the advertisement payload"
+    default y
+    depends on ZMK_BLE_ADV
+    help
+      Uses zmk_keymap_layer_name() to embed the active layer's name in
+      the payload. Requires a ZMK version that exposes this function
+      (ZMK main branch, 2024+). Disable on older ZMK trees where the
+      function is absent; the layer name field will fall back to "L<n>".

@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 
-if(CONFIG_BLE_ADVERTISER)
-  add_subdirectory(src)
+zephyr_include_directories(include)
+
+if(CONFIG_ZMK_BLE_ADV)
+    target_sources(app PRIVATE src/ble_adv.c)
 endif()
