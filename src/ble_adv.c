@@ -39,7 +39,7 @@
 
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 #include <zmk/hid_indicators.h>
-#include <zmk/endpoints.h>
+#include <zmk/endpoint.h>
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -228,7 +228,7 @@ static void build_payload(void) {
 #endif
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
     /* Indicators are tracked per endpoint; query the currently selected one. */
-    if (zmk_hid_indicators_get_profile(zmk_endpoints_selected()) & BIT(1)) {
+    if (zmk_hid_indicators_get_profile(zmk_endpoint_get_selected()) & BIT(1)) {
         flags |= ZMK_BLE_ADV_FLAG_CAPS_LOCK;
     }
 #endif
