@@ -15,8 +15,8 @@ extern "C" {
  *
  * AD packet budget (31 bytes):
  *   Flags AD        : 3 bytes  [0x02 0x01 0x06]
- *   Manufacturer AD : 1(len) + 1(type=0xFF) + 21(payload struct) = 23 bytes
- *   Total           : 26 bytes  (5 bytes spare)
+ *   Manufacturer AD : 1(len) + 1(type=0xFF) + 20(payload struct) = 22 bytes
+ *   Total           : 25 bytes  (6 bytes spare)
  *
  * company_id[2] are the first two bytes of the payload struct; the BT stack
  * treats the first two bytes of manufacturer data as the company ID.
@@ -29,11 +29,11 @@ extern "C" {
  *   [4]     battery_main     : 0-100 %
  *   [5]     battery_periph   : 0-100 %, 0 = not available
  *   [6]     bt_profile_layer : (active_layer * 15) + bt_profile
- *   [7]     active_layer     : 0-15
- *   [8]     status_flags     : see ZMK_BLE_ADV_FLAG_* below
- *   [9-18]  layer_name       : up to 10 ASCII chars, null-padded
- *   [19]    modifiers        : HID modifier byte (see ZMK_BLE_ADV_MOD_* below)
- *   [20]    wpm              : 0-255
+ *                              decode: layer = value / 15, profile = value % 15
+ *   [7]     status_flags     : see ZMK_BLE_ADV_FLAG_* below
+ *   [8-17]  layer_name       : up to 10 ASCII chars, null-padded
+ *   [18]    modifiers        : HID modifier byte (see ZMK_BLE_ADV_MOD_* below)
+ *   [19]    wpm              : 0-255
  */
 struct zmk_ble_adv_payload {
     uint8_t company_id[2];
@@ -41,7 +41,6 @@ struct zmk_ble_adv_payload {
     uint8_t battery_main;
     uint8_t battery_periph;
     uint8_t bt_profile_layer;
-    uint8_t active_layer;
     uint8_t status_flags;
     char    layer_name[10];
     uint8_t modifiers;

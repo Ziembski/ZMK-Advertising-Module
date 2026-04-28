@@ -18,12 +18,11 @@ BLE AD structure (3-byte Flags + 23-byte Manufacturer = **26 bytes**, within the
 | 2–3 | 2 | `protocol_id` | `0x00 0x01` |
 | 4 | 1 | `battery_main` | Central / standalone battery 0–100 % |
 | 5 | 1 | `battery_periph` | First peripheral battery 0–100 %, `0` = not available |
-| 6 | 1 | `bt_profile_layer` | `(active_layer × 15) + bt_profile` |
-| 7 | 1 | `active_layer` | 0–15 |
-| 8 | 1 | `status_flags` | See table below |
-| 9–18 | 10 | `layer_name` | ASCII, null-padded, trimmed at 10 chars |
-| 19 | 1 | `modifiers` | HID modifier byte – see table below |
-| 20 | 1 | `wpm` | Words per minute 0–255 |
+| 6 | 1 | `bt_profile_layer` | `(active_layer × 15) + bt_profile` — decode: `layer = value / 15`, `profile = value % 15` |
+| 7 | 1 | `status_flags` | See table below |
+| 8–17 | 10 | `layer_name` | ASCII, null-padded, trimmed at 10 chars |
+| 18 | 1 | `modifiers` | HID modifier byte – see table below |
+| 19 | 1 | `wpm` | Words per minute 0–255 |
 
 ### `bt_profile_layer` encoding
 

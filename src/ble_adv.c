@@ -39,7 +39,7 @@
 
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 #include <zmk/hid_indicators.h>
-#include <zmk/endpoints.h>
+#include <zmk/endpoint.h>
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -60,8 +60,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 /* -------------------------------------------------------------------------
  * Static assertions
  * ------------------------------------------------------------------------- */
-BUILD_ASSERT(sizeof(struct zmk_ble_adv_payload) == 21,
-             "zmk_ble_adv_payload must be exactly 21 bytes");
+BUILD_ASSERT(sizeof(struct zmk_ble_adv_payload) == 20,
+             "zmk_ble_adv_payload must be exactly 20 bytes");
 
 /* -------------------------------------------------------------------------
  * WPM state
@@ -198,8 +198,6 @@ static void build_payload(void) {
         layer = 15U;
     }
 #endif
-    payload.active_layer = layer;
-
     uint8_t profile = 0U;
 #if IS_ENABLED(CONFIG_ZMK_BLE) && \
     (IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT))
@@ -208,7 +206,8 @@ static void build_payload(void) {
         profile = 4U;
     }
 #endif
-    /* Encoding: (layer * 15) + profile.  Max value: (15*15)+4 = 229 <= 255. */
+    /* Encoding: (layer * 15) + profile.  Max value: (15*15)+4 = 229 <= 255.
+     * Receiver recovers layer = value / 15, profile = value % 15.           */
     payload.bt_profile_layer = (uint8_t)((layer * 15U) + profile);
 
     uint8_t flags = 0U;
