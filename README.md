@@ -41,7 +41,8 @@ Maximum: layer 15, profile 4 → `(15 × 15) + 4 = 229` (fits in one byte).
 | 1 | Charging (USB powered + battery < 100 %) |
 | 2 | BLE profile active and connected |
 | 3 | Caps Lock on (requires `CONFIG_ZMK_HID_INDICATORS=y`) |
-| 4–7 | Reserved |
+| 4 | USB logging enabled (compile-time constant, `1` if built with `zmk-usb-logging` snippet) |
+| 5–7 | Reserved |
 
 ### `modifiers`
 

@@ -39,7 +39,7 @@
 
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 #include <zmk/hid_indicators.h>
-#include <zmk/endpoints.h>
+#include <zmk/endpoint.h>
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -230,6 +230,11 @@ static void build_payload(void) {
     if (zmk_hid_indicators_get_profile(zmk_endpoint_get_selected()) & BIT(1)) {
         flags |= ZMK_BLE_ADV_FLAG_CAPS_LOCK;
     }
+#endif
+#if IS_ENABLED(CONFIG_ZMK_USB_LOGGING)
+    /* This is a compile-time constant: the bit is always 1 in firmwares built
+     * with the zmk-usb-logging snippet and always 0 in all other builds.    */
+    flags |= ZMK_BLE_ADV_FLAG_USB_LOGGING;
 #endif
     payload.status_flags = flags;
 

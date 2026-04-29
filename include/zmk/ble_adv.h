@@ -52,7 +52,8 @@ struct zmk_ble_adv_payload {
 #define ZMK_BLE_ADV_FLAG_CHARGING       BIT(1)
 #define ZMK_BLE_ADV_FLAG_BLE_ACTIVE     BIT(2)
 #define ZMK_BLE_ADV_FLAG_CAPS_LOCK      BIT(3)
-/* bits 4-7 reserved */
+#define ZMK_BLE_ADV_FLAG_USB_LOGGING    BIT(4)
+/* bits 5-7 reserved */
 
 /*
  * modifiers bit definitions (identical to USB HID modifier byte).
