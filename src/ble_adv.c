@@ -35,11 +35,11 @@
 
 #if IS_ENABLED(CONFIG_ZMK_USB)
 #include <zmk/usb.h>
+#include <zmk/endpoints.h>
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 #include <zmk/hid_indicators.h>
-#include <zmk/endpoints.h>
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -235,6 +235,12 @@ static void build_payload(void) {
     /* This is a compile-time constant: the bit is always 1 in firmwares built
      * with the zmk-usb-logging snippet and always 0 in all other builds.    */
     flags |= ZMK_BLE_ADV_FLAG_USB_LOGGING;
+#endif
+#if IS_ENABLED(CONFIG_ZMK_USB)
+    /* Preferred output: BIT(5) = 0 means Bluetooth, 1 means USB. */
+    if (zmk_endpoint_get_selected() == ZMK_ENDPOINT_USB) {
+        flags |= ZMK_BLE_ADV_FLAG_OUTPUT_USB;
+    }
 #endif
     payload.status_flags = flags;
 
