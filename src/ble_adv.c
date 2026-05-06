@@ -236,6 +236,13 @@ static void build_payload(void) {
      * with the zmk-usb-logging snippet and always 0 in all other builds.    */
     flags |= ZMK_BLE_ADV_FLAG_USB_LOGGING;
 #endif
+#if IS_ENABLED(CONFIG_ZMK_USB)
+    /* Preferred output: BIT(5) = 1 when USB HID is active (USB is the
+     * effective output), 0 when output is going over Bluetooth.       */
+    if (zmk_usb_is_hid_ready()) {
+        flags |= ZMK_BLE_ADV_FLAG_OUTPUT_USB;
+    }
+#endif
     payload.status_flags = flags;
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
