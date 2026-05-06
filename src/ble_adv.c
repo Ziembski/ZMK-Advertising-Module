@@ -31,15 +31,17 @@
 #include <zmk/events/layer_state_changed.h>
 #include <zmk/events/position_state_changed.h>
 #include <zmk/events/ble_active_profile_changed.h>
+#include <zmk/events/endpoint_changed.h>
 #include <zmk/ble_adv.h>
 
 #if IS_ENABLED(CONFIG_ZMK_USB)
 #include <zmk/usb.h>
 #endif
 
+#include <zmk/endpoints.h>
+
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 #include <zmk/hid_indicators.h>
-#include <zmk/endpoints.h>
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -236,6 +238,14 @@ static void build_payload(void) {
      * with the zmk-usb-logging snippet and always 0 in all other builds.    */
     flags |= ZMK_BLE_ADV_FLAG_USB_LOGGING;
 #endif
+#if IS_ENABLED(CONFIG_ZMK_USB)
+    /* Preferred output: BIT(5) = 1 when the selected endpoint is USB,
+     * 0 when it is Bluetooth. This reflects the user's &out preference,
+     * not merely whether a USB cable is plugged in.                     */
+    if (zmk_endpoint_get_selected().transport == ZMK_TRANSPORT_USB) {
+        flags |= ZMK_BLE_ADV_FLAG_OUTPUT_USB;
+    }
+#endif
     payload.status_flags = flags;
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -293,7 +303,15 @@ static void do_advertise(void) {
     int err = bt_le_ext_adv_set_data(adv_set, adv_ad, ARRAY_SIZE(adv_ad),
                                      adv_sd, ARRAY_SIZE(adv_sd));
     if (err != 0) {
-        LOG_WRN("Failed to set advertising data: %d -- will recreate set next cycle", err);
+        LOG_WRN("Failed to set advertising data: %d -- destroying set so no ghost "
+                "set keeps transmitting the stale payload", err);
+        /* Stop and delete the set so the controller drops it entirely.
+         * Leaving adv_set alive but nulled here would let the controller
+         * keep transmitting the old payload in parallel with the new set
+         * created on the next cycle, causing the two payloads to alternate
+         * and appear as flicker to observers.                              */
+        bt_le_ext_adv_stop(adv_set);
+        bt_le_ext_adv_delete(adv_set);
         adv_set = NULL;
         return;
     }
@@ -388,12 +406,28 @@ ZMK_SUBSCRIPTION(ble_adv_layer, zmk_layer_state_changed);
 #if IS_ENABLED(CONFIG_ZMK_BLE) && \
     (IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT))
 static int on_ble_profile_changed(const zmk_event_t *eh) {
-    request_event_update();
+    if (!adv_running) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+    /* Use a small delay so that zmk_endpoint_changed, which ZMK fires
+     * shortly after a profile switch, has time to arrive and reschedule
+     * the work to 0 ms (k_work_reschedule always honours the shorter
+     * delay). This coalesces both events into a single payload build
+     * that reads the fully-settled endpoint state, eliminating the
+     * flicker that occurs when the two builds see different BIT(5) values. */
+    k_work_reschedule(&adv_work, K_MSEC(CONFIG_ZMK_BLE_ADV_EVENT_THROTTLE_MS));
     return ZMK_EV_EVENT_BUBBLE;
 }
 ZMK_LISTENER(ble_adv_profile, on_ble_profile_changed);
 ZMK_SUBSCRIPTION(ble_adv_profile, zmk_ble_active_profile_changed);
 #endif
+
+static int on_endpoint_changed(const zmk_event_t *eh) {
+    request_event_update();
+    return ZMK_EV_EVENT_BUBBLE;
+}
+ZMK_LISTENER(ble_adv_endpoint, on_endpoint_changed);
+ZMK_SUBSCRIPTION(ble_adv_endpoint, zmk_endpoint_changed);
 
 /*
  * Peripheral battery: ZMK fires zmk_peripheral_battery_state_changed on the
