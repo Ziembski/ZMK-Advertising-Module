@@ -31,15 +31,17 @@
 #include <zmk/events/layer_state_changed.h>
 #include <zmk/events/position_state_changed.h>
 #include <zmk/events/ble_active_profile_changed.h>
+#include <zmk/events/endpoint_changed.h>
 #include <zmk/ble_adv.h>
 
 #if IS_ENABLED(CONFIG_ZMK_USB)
 #include <zmk/usb.h>
 #endif
 
+#include <zmk/endpoints.h>
+
 #if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
 #include <zmk/hid_indicators.h>
-#include <zmk/endpoints.h>
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -236,6 +238,14 @@ static void build_payload(void) {
      * with the zmk-usb-logging snippet and always 0 in all other builds.    */
     flags |= ZMK_BLE_ADV_FLAG_USB_LOGGING;
 #endif
+#if IS_ENABLED(CONFIG_ZMK_USB)
+    /* Preferred output: BIT(5) = 1 when the selected endpoint is USB,
+     * 0 when it is Bluetooth. This reflects the user's &out preference,
+     * not merely whether a USB cable is plugged in.                     */
+    if (zmk_endpoint_get_selected().transport == ZMK_TRANSPORT_USB) {
+        flags |= ZMK_BLE_ADV_FLAG_OUTPUT_USB;
+    }
+#endif
     payload.status_flags = flags;
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) || !IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -394,6 +404,13 @@ static int on_ble_profile_changed(const zmk_event_t *eh) {
 ZMK_LISTENER(ble_adv_profile, on_ble_profile_changed);
 ZMK_SUBSCRIPTION(ble_adv_profile, zmk_ble_active_profile_changed);
 #endif
+
+static int on_endpoint_changed(const zmk_event_t *eh) {
+    request_event_update();
+    return ZMK_EV_EVENT_BUBBLE;
+}
+ZMK_LISTENER(ble_adv_endpoint, on_endpoint_changed);
+ZMK_SUBSCRIPTION(ble_adv_endpoint, zmk_endpoint_changed);
 
 /*
  * Peripheral battery: ZMK fires zmk_peripheral_battery_state_changed on the
