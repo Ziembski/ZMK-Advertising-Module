@@ -31,6 +31,13 @@ extern "C" {
  *   [6]     bt_profile_layer : (active_layer * 15) + bt_profile
  *                              decode: layer = value / 15, profile = value % 15
  *   [7]     status_flags     : see ZMK_BLE_ADV_FLAG_* below
+ *                              bit 0: USB connected
+ *                              bit 1: charging
+ *                              bit 2: BLE profile active and connected
+ *                              bit 3: Caps Lock on
+ *                              bit 4: USB logging enabled
+ *                              bit 5: preferred output (0=BT, 1=USB)
+ *                              bits 6-7: reserved
  *   [8-17]  layer_name       : up to 10 ASCII chars, null-padded
  *   [18]    modifiers        : HID modifier byte (see ZMK_BLE_ADV_MOD_* below)
  *   [19]    wpm              : 0-255
@@ -53,7 +60,9 @@ struct zmk_ble_adv_payload {
 #define ZMK_BLE_ADV_FLAG_BLE_ACTIVE     BIT(2)
 #define ZMK_BLE_ADV_FLAG_CAPS_LOCK      BIT(3)
 #define ZMK_BLE_ADV_FLAG_USB_LOGGING    BIT(4)
-/* bits 5-7 reserved */
+/* bit 5: preferred output — 0 = Bluetooth, 1 = USB */
+#define ZMK_BLE_ADV_FLAG_OUTPUT_USB     BIT(5)
+/* bits 6-7 reserved */
 
 /*
  * modifiers bit definitions (identical to USB HID modifier byte).
